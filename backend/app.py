@@ -1,3 +1,4 @@
+import os
 import re
 import jwt
 import bcrypt
@@ -12,33 +13,48 @@ from flask_socketio import SocketIO, join_room, leave_room, emit
 
 from database import init_db, get_conn
 
+import os
 
-SECRET_KEY = "salarite-dev-secret-change-me-please-use-32+chars-in-production"
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise ValueError("SECRET_KEY is not set")
+
 JWT_ALGO = "HS256"
-FRONTEND_URL = "http://localhost:5173"
-PORT = 5001
+PORT = int(os.getenv("PORT", 5001))
 
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "https://salarite-frontend-ultw.onrender.com",
+]
+
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url and frontend_url not in ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS.append(frontend_url)
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = SECRET_KEY
 
 CORS(
     app,
-    resources={r"/api/*": {"origins": FRONTEND_URL}},
+    resources={r"/api/*": {"origins": ALLOWED_ORIGINS}},
     supports_credentials=True
 )
 
 @app.after_request
 def after_request(response):
-    response.headers["Access-Control-Allow-Origin"] = FRONTEND_URL
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    origin = request.headers.get("Origin")
+    if origin in ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+        response.headers["Vary"] = "Origin"
     return response
 
 socketio = SocketIO(
     app,
-    cors_allowed_origins=[FRONTEND_URL],
+    cors_allowed_origins=ALLOWED_ORIGINS,
     async_mode="threading"
 )
 
@@ -100,7 +116,7 @@ def get_request_user():
         return None
 
 
-@app.post("/api/auth/signup")
+@app.post("/api/auth/signup", methods=["POST", "OPTIONS"])
 def signup():
     try:
         data = request.get_json() or {}
@@ -161,7 +177,7 @@ def signup():
 
 
 
-@app.post("/api/auth/login")
+@app.post("/api/auth/login", methods=["POST", "OPTIONS"])
 def login():
     try:
         data = request.get_json() or {}
