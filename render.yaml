@@ -9,3 +9,16 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+
+  - type: web
+    name: salarite-frontend
+    env: node
+    branch: main
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    publishDir: dist
+    envVars:
+      - key: VITE_API_URL
+        value: https://salarite.onrender.com
+      - key: VITE_SOCKET_URL
+        value: https://salarite.onrender.com
