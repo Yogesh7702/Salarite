@@ -1,3 +1,6 @@
+import eventlet
+eventlet.monkey_patch()
+
 import os
 import re
 import jwt
@@ -50,7 +53,11 @@ def after_request(response):
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Vary"] = "Origin"
+    # OPTIONS preflight ko 200 de
+    if request.method == "OPTIONS":
+        response.status_code = 200
     return response
+
 
 socketio = SocketIO(
     app,
@@ -652,7 +659,11 @@ def health():
     return jsonify({"ok": True})
 
 
-if __name__ == "__main__":
+try:
     init_db()
+except Exception as e:
+    print(f"Error initializing database: {e}")
+
+if __name__ == "__main__":
     print(f"Salarite backend running on http://localhost:{PORT}")
     socketio.run(app, host="0.0.0.0", port=PORT, debug=True, use_reloader=False)
