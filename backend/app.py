@@ -116,7 +116,7 @@ def get_request_user():
         return None
 
 
-@app.post("/api/auth/signup", methods=["POST", "OPTIONS"])
+@app.route("/api/auth/signup", methods=["POST", "OPTIONS"])
 def signup():
     try:
         data = request.get_json() or {}
@@ -177,7 +177,7 @@ def signup():
 
 
 
-@app.post("/api/auth/login", methods=["POST", "OPTIONS"])
+@app.route("/api/auth/login", methods=["POST", "OPTIONS"])
 def login():
     try:
         data = request.get_json() or {}
