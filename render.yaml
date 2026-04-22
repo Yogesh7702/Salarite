@@ -9,6 +9,10 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
+      - key: DATABASE_URL
+        value: postgresql://salarite_database_user:3p7h1qv57lj7knDn7ITlRTZTbo9FfgPr@dpg-d7k7p0e7r5hc73fts8a0-a/salarite_database
+      - key: FRONTEND_URL
+        value: https://salarite-frontend-ultw.onrender.com
 
   - type: web
     name: salarite-frontend
