@@ -57,9 +57,3 @@ VITE_SOCKET_URL=http://localhost:5001
 
 Built by Yogesh.
 ```
-
-Ab isko `README.md` me paste kar de, phir:
-```bash
-git add README.md
-git status
-```
