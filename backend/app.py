@@ -6,7 +6,6 @@ import re
 import jwt
 import bcrypt
 import uuid
-import sqlite3
 from datetime import datetime, timedelta
 from functools import wraps
 
@@ -15,8 +14,6 @@ from flask_cors import CORS
 from flask_socketio import SocketIO, join_room, leave_room, emit
 
 from database import init_db, get_conn
-
-import os
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
@@ -44,6 +41,7 @@ CORS(
     supports_credentials=True
 )
 
+
 @app.after_request
 def after_request(response):
     origin = request.headers.get("Origin")
@@ -53,7 +51,6 @@ def after_request(response):
         response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
         response.headers["Vary"] = "Origin"
-    # OPTIONS preflight ko 200 de
     if request.method == "OPTIONS":
         response.status_code = 200
     return response
@@ -62,7 +59,7 @@ def after_request(response):
 socketio = SocketIO(
     app,
     cors_allowed_origins=ALLOWED_ORIGINS,
-    async_mode="threading"
+    async_mode="eventlet"
 )
 
 
@@ -84,16 +81,13 @@ def auth_required(roles=None):
             header = request.headers.get("Authorization", "")
             if not header.startswith("Bearer "):
                 return jsonify({"error": "Missing token"}), 401
-
             try:
                 payload = jwt.decode(header[7:], SECRET_KEY, algorithms=[JWT_ALGO])
                 payload["sub"] = int(payload["sub"])
             except (jwt.PyJWTError, ValueError, TypeError):
                 return jsonify({"error": "Invalid token"}), 401
-
             if roles and payload.get("role") not in roles:
                 return jsonify({"error": "Forbidden"}), 403
-
             request.user = payload
             return fn(*args, **kwargs)
         return wrapper
@@ -102,45 +96,30 @@ def auth_required(roles=None):
 
 def log_activity(type_, message, user_id=None):
     conn = get_conn()
-    conn.execute(
-        "INSERT INTO activities(type,message,user_id) VALUES(?,?,?)",
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO activities(type,message,user_id) VALUES(%s,%s,%s)",
         (type_, message, user_id),
     )
     conn.commit()
+    cur.close()
     conn.close()
     socketio.emit("activity_new", {"type": type_, "message": message})
-
-
-def get_request_user():
-    header = request.headers.get("Authorization", "")
-    if not header.startswith("Bearer "):
-        return None
-    try:
-        payload = jwt.decode(header[7:], SECRET_KEY, algorithms=[JWT_ALGO])
-        payload["sub"] = int(payload["sub"])
-        return payload
-    except (jwt.PyJWTError, ValueError, TypeError):
-        return None
 
 
 @app.route("/api/auth/signup", methods=["POST", "OPTIONS"])
 def signup():
     try:
         data = request.get_json() or {}
-        print("SIGNUP DATA:", data)
-
         name = (data.get("name") or "").strip()
         email = (data.get("email") or "").strip().lower()
         password = data.get("password") or ""
 
         raw_role = data.get("role")
-
         if isinstance(raw_role, dict):
             role = (raw_role.get("value") or "").strip().lower()
         else:
             role = str(raw_role or "").strip().lower()
-
-        print("PARSED ROLE:", role)
 
         if not (name and email and password and role in ("employer", "hr", "candidate")):
             return jsonify({"error": "Invalid fields"}), 400
@@ -148,21 +127,26 @@ def signup():
         pw_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
         conn = get_conn()
+        cur = conn.cursor()
         try:
-            cur = conn.execute(
-                "INSERT INTO users(name,email,password_hash,role) VALUES(?,?,?,?)",
+            cur.execute(
+                "INSERT INTO users(name,email,password_hash,role) VALUES(%s,%s,%s,%s) RETURNING id",
                 (name, email, pw_hash, role),
             )
+            user_id = cur.fetchone()["id"]
             conn.commit()
 
-            user = conn.execute(
-                "SELECT * FROM users WHERE id=?",
-                (cur.lastrowid,)
-            ).fetchone()
-        except sqlite3.IntegrityError:
+            cur.execute("SELECT * FROM users WHERE id=%s", (user_id,))
+            user = cur.fetchone()
+        except Exception as e:
+            conn.rollback()
+            cur.close()
             conn.close()
-            return jsonify({"error": "Email already used"}), 400
+            if "unique" in str(e).lower():
+                return jsonify({"error": "Email already used"}), 400
+            raise e
 
+        cur.close()
         conn.close()
 
         user_d = dict(user)
@@ -183,29 +167,22 @@ def signup():
         return jsonify({"error": str(e)}), 500
 
 
-
 @app.route("/api/auth/login", methods=["POST", "OPTIONS"])
 def login():
     try:
         data = request.get_json() or {}
-
         email = (data.get("email") or "").strip().lower()
         password = data.get("password") or ""
 
-        print("LOGIN TRY:", email)
-
         conn = get_conn()
-        user = conn.execute(
-            "SELECT * FROM users WHERE email=?",
-            (email,)
-        ).fetchone()
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users WHERE email=%s", (email,))
+        user = cur.fetchone()
+        cur.close()
         conn.close()
-
-        print("USER FOUND:", bool(user))
 
         if user:
             ok = bcrypt.checkpw(password.encode(), user["password_hash"].encode())
-            print("PASSWORD MATCH:", ok)
         else:
             ok = False
 
@@ -229,8 +206,6 @@ def login():
         return jsonify({"error": str(e)}), 500
 
 
-
-
 @app.get("/api/auth/me")
 @auth_required()
 def me():
@@ -248,26 +223,29 @@ def me():
 @auth_required()
 def list_tasks():
     conn = get_conn()
+    cur = conn.cursor()
 
     if request.user["role"] == "employer":
-        rows = conn.execute("""
+        cur.execute("""
             SELECT t.*, u.name AS employer_name, h.name AS assignee_name
             FROM tasks t
             LEFT JOIN users u ON u.id = t.employer_id
             LEFT JOIN users h ON h.id = t.assigned_to
-            WHERE t.employer_id = ?
+            WHERE t.employer_id = %s
             ORDER BY t.created_at DESC
-        """, (request.user["sub"],)).fetchall()
+        """, (request.user["sub"],))
     else:
-        rows = conn.execute("""
+        cur.execute("""
             SELECT t.*, u.name AS employer_name, h.name AS assignee_name
             FROM tasks t
             LEFT JOIN users u ON u.id = t.employer_id
             LEFT JOIN users h ON h.id = t.assigned_to
-            WHERE t.assigned_to = ?
+            WHERE t.assigned_to = %s
             ORDER BY t.created_at DESC
-        """, (request.user["sub"],)).fetchall()
+        """, (request.user["sub"],))
 
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -284,58 +262,49 @@ def create_task():
 
     if not title:
         return jsonify({"error": "Title is required"}), 400
-
     if not assigned_hr_email:
         return jsonify({"error": "Assignee required"}), 400
-
     if priority not in ("low", "medium", "high"):
         priority = "medium"
 
     conn = get_conn()
+    cur = conn.cursor()
 
-    hr_user = conn.execute(
-        "SELECT id, name, email, role FROM users WHERE lower(email)=?",
+    cur.execute(
+        "SELECT id, name, email, role FROM users WHERE lower(email)=%s",
         (assigned_hr_email,)
-    ).fetchone()
+    )
+    hr_user = cur.fetchone()
 
     if not hr_user:
+        cur.close()
         conn.close()
         return jsonify({"error": "HR not found with this email"}), 400
 
     if hr_user["role"] != "hr":
+        cur.close()
         conn.close()
         return jsonify({"error": "Selected user is not an HR"}), 400
 
-    cur = conn.execute(
+    cur.execute(
         """
         INSERT INTO tasks (title, description, priority, status, employer_id, assigned_to)
-        VALUES (?, ?, ?, ?, ?, ?)
+        VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
         """,
-        (
-            title,
-            description,
-            priority,
-            "pending",
-            request.user["sub"],
-            hr_user["id"],
-        ),
+        (title, description, priority, "pending", request.user["sub"], hr_user["id"]),
     )
+    task_id = cur.fetchone()["id"]
     conn.commit()
 
-    task = conn.execute(
-        """
-        SELECT t.*,
-               u.name AS employer_name,
-               h.name AS assignee_name,
-               h.email AS assignee_email
+    cur.execute("""
+        SELECT t.*, u.name AS employer_name, h.name AS assignee_name, h.email AS assignee_email
         FROM tasks t
         LEFT JOIN users u ON u.id = t.employer_id
         LEFT JOIN users h ON h.id = t.assigned_to
-        WHERE t.id = ?
-        """,
-        (cur.lastrowid,),
-    ).fetchone()
-
+        WHERE t.id = %s
+    """, (task_id,))
+    task = cur.fetchone()
+    cur.close()
     conn.close()
 
     log_activity(
@@ -344,7 +313,6 @@ def create_task():
         request.user["sub"],
     )
     socketio.emit("tasks_changed", {})
-
     return jsonify(dict(task)), 201
 
 
@@ -353,17 +321,18 @@ def create_task():
 def list_users():
     role = request.args.get("role")
     conn = get_conn()
+    cur = conn.cursor()
 
     if role:
-        rows = conn.execute(
-            "SELECT id, name, email, role FROM users WHERE role=? ORDER BY name ASC",
+        cur.execute(
+            "SELECT id, name, email, role FROM users WHERE role=%s ORDER BY name ASC",
             (role,)
-        ).fetchall()
+        )
     else:
-        rows = conn.execute(
-            "SELECT id, name, email, role FROM users ORDER BY name ASC"
-        ).fetchall()
+        cur.execute("SELECT id, name, email, role FROM users ORDER BY name ASC")
 
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -378,34 +347,36 @@ def update_task(task_id):
         return jsonify({"error": "Invalid status"}), 400
 
     conn = get_conn()
-    task = conn.execute(
-        "SELECT * FROM tasks WHERE id=?",
-        (task_id,)
-    ).fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM tasks WHERE id=%s", (task_id,))
+    task = cur.fetchone()
 
     if not task:
+        cur.close()
         conn.close()
         return jsonify({"error": "Not found"}), 404
 
     if request.user["role"] == "hr":
         if task["assigned_to"] != request.user["sub"]:
+            cur.close()
             conn.close()
             return jsonify({"error": "Forbidden"}), 403
-
         if status == "pending":
+            cur.close()
             conn.close()
             return jsonify({"error": "Forbidden"}), 403
 
     elif request.user["role"] == "employer":
         if task["employer_id"] != request.user["sub"]:
+            cur.close()
             conn.close()
             return jsonify({"error": "Forbidden"}), 403
-
         if status in ("in_progress", "completed"):
+            cur.close()
             conn.close()
             return jsonify({"error": "Forbidden"}), 403
 
-    fields = ["status=?"]
+    fields = ["status=%s"]
     values = [status]
 
     if request.user["role"] == "hr" and status == "in_progress":
@@ -419,16 +390,15 @@ def update_task(task_id):
 
     values.append(task_id)
 
-    conn.execute(
-        f"UPDATE tasks SET {', '.join(fields)} WHERE id=?",
+    cur.execute(
+        f"UPDATE tasks SET {', '.join(fields)} WHERE id=%s",
         values
     )
     conn.commit()
 
-    row = conn.execute(
-        "SELECT * FROM tasks WHERE id=?",
-        (task_id,)
-    ).fetchone()
+    cur.execute("SELECT * FROM tasks WHERE id=%s", (task_id,))
+    row = cur.fetchone()
+    cur.close()
     conn.close()
 
     msg = {
@@ -439,7 +409,6 @@ def update_task(task_id):
 
     log_activity(f"task_{status}", msg, request.user["sub"])
     socketio.emit("tasks_changed", {})
-
     return jsonify(dict(row))
 
 
@@ -447,18 +416,21 @@ def update_task(task_id):
 @auth_required()
 def list_interviews():
     conn = get_conn()
+    cur = conn.cursor()
 
     if request.user["role"] == "hr":
-        rows = conn.execute(
-            "SELECT * FROM interviews WHERE created_by=? ORDER BY scheduled_at ASC",
+        cur.execute(
+            "SELECT * FROM interviews WHERE created_by=%s ORDER BY scheduled_at ASC",
             (request.user["sub"],)
-        ).fetchall()
+        )
     else:
-        rows = conn.execute(
-            "SELECT * FROM interviews WHERE candidate_email=? ORDER BY scheduled_at ASC",
+        cur.execute(
+            "SELECT * FROM interviews WHERE candidate_email=%s ORDER BY scheduled_at ASC",
             (request.user["email"].lower(),)
-        ).fetchall()
+        )
 
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -478,50 +450,45 @@ def create_interview():
 
     if not candidate_email or not scheduled_at or mode not in ("voice", "video", "chat"):
         return jsonify({"error": "Invalid fields"}), 400
-
     if not re.fullmatch(email_pattern, candidate_email):
         return jsonify({"error": "Invalid email address"}), 400
-
     if candidate_email == request.user["email"].lower():
         return jsonify({"error": "You cannot schedule an interview for your own email"}), 400
 
     conn = get_conn()
+    cur = conn.cursor()
 
-    existing_user = conn.execute(
-        "SELECT id, role FROM users WHERE lower(email)=?",
+    cur.execute(
+        "SELECT id, role FROM users WHERE lower(email)=%s",
         (candidate_email,)
-    ).fetchone()
+    )
+    existing_user = cur.fetchone()
 
     if existing_user and existing_user["role"] == "hr":
+        cur.close()
         conn.close()
         return jsonify({"error": "This email belongs to an HR account"}), 400
 
     room_id = uuid.uuid4().hex[:12]
 
-    cur = conn.execute(
+    cur.execute(
         """
         INSERT INTO interviews(candidate_name, candidate_email, scheduled_at, mode, room_id, notes, created_by)
-        VALUES(?,?,?,?,?,?,?)
+        VALUES(%s,%s,%s,%s,%s,%s,%s) RETURNING id
         """,
         (candidate_name, candidate_email, scheduled_at, mode, room_id, notes, request.user["sub"]),
     )
+    interview_id = cur.fetchone()["id"]
     conn.commit()
 
-    row = conn.execute(
-        "SELECT * FROM interviews WHERE id=?",
-        (cur.lastrowid,)
-    ).fetchone()
+    cur.execute("SELECT * FROM interviews WHERE id=%s", (interview_id,))
+    row = cur.fetchone()
+    cur.close()
     conn.close()
 
     display_name = candidate_name if candidate_name else candidate_email
-
-    log_activity(
-        "interview_scheduled",
-        f'Interview scheduled with {display_name}',
-        request.user["sub"]
-    )
+    log_activity("interview_scheduled", f'Interview scheduled with {display_name}', request.user["sub"])
     socketio.emit("interviews_changed", {})
-
     return jsonify(dict(row))
 
 
@@ -529,10 +496,10 @@ def create_interview():
 @auth_required()
 def interview_access(room_id):
     conn = get_conn()
-    interview = conn.execute(
-        "SELECT * FROM interviews WHERE room_id=?",
-        (room_id,)
-    ).fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM interviews WHERE room_id=%s", (room_id,))
+    interview = cur.fetchone()
+    cur.close()
     conn.close()
 
     if not interview:
@@ -546,32 +513,25 @@ def interview_access(room_id):
     if not allowed:
         return jsonify({"error": "Forbidden"}), 403
 
-    return jsonify({
-        "ok": True,
-        "interview": dict(interview)
-    })
+    return jsonify({"ok": True, "interview": dict(interview)})
 
 
 @app.get("/api/activities")
 @auth_required()
 def list_activities():
     conn = get_conn()
+    cur = conn.cursor()
 
     if request.user["role"] == "hr":
-        rows = conn.execute(
-            """
-            SELECT * FROM activities
-            WHERE user_id = ?
-            ORDER BY created_at DESC
-            LIMIT 50
-            """,
+        cur.execute(
+            "SELECT * FROM activities WHERE user_id=%s ORDER BY created_at DESC LIMIT 50",
             (request.user["sub"],)
-        ).fetchall()
+        )
     else:
-        rows = conn.execute(
-            "SELECT * FROM activities ORDER BY created_at DESC LIMIT 50"
-        ).fetchall()
+        cur.execute("SELECT * FROM activities ORDER BY created_at DESC LIMIT 50")
 
+    rows = cur.fetchall()
+    cur.close()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -606,10 +566,10 @@ def on_join(data):
             return
 
     conn = get_conn()
-    interview = conn.execute(
-        "SELECT * FROM interviews WHERE room_id=?",
-        (room,)
-    ).fetchone()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM interviews WHERE room_id=%s", (room,))
+    interview = cur.fetchone()
+    cur.close()
     conn.close()
 
     if interview:
@@ -623,7 +583,6 @@ def on_join(data):
 
     join_room(room)
     emit("peer_joined", {"user": user, "sid": request.sid}, to=room, include_self=False)
-    print(f"[room {room}] {user} joined")
 
 
 @socketio.on("leave_room")
@@ -661,8 +620,10 @@ def health():
 
 try:
     init_db()
+    print("DB initialized successfully")
 except Exception as e:
-    print(f"Error initializing database: {e}")
+    print(f"DB init error: {e}")
+
 
 if __name__ == "__main__":
     print(f"Salarite backend running on http://localhost:{PORT}")
