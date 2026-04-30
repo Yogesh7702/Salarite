@@ -1,11 +1,11 @@
 # Salarite
 
-This is a full-stack hiring workflow app built with Flask and React. It supports role-based login, task management between Employer and HR users, interview scheduling, and a real-time call room. [web:584][web:587]
+This is a full-stack hiring workflow app built with Flask, fast api and React. It supports role-based login, task management between Employer and HR users, interview scheduling, and a real-time call room. [web:584][web:587]
 
 ## Tech Stack
 
 - Frontend: React, Vite, React Router, Axios
-- Backend: Flask, Flask-SocketIO, SQLite, JWT
+- Backend: Flask,fast api, Flask-SocketIO, SQLite, JWT
 - Realtime: Socket.IO, WebRTC [web:593]
 
 ## Run Locally
