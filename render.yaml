@@ -5,7 +5,7 @@ services:
     branch: main
     rootDir: backend
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:$PORT app:app
+    startCommand: uvicorn main:socket_app --host 0.0.0.0 --port $PORT
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.0
@@ -13,7 +13,7 @@ services:
         value: postgresql://salarite_database_user:3p7h1qv57lj7knDn7ITlRTZTbo9FfgPr@dpg-d7k7p0e7r5hc73fts8a0-a/salarite_database
       - key: FRONTEND_URL
         value: https://salarite-frontend-ultw.onrender.com
-
+ 
   - type: web
     name: salarite-frontend
     env: node
