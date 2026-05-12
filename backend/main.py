@@ -244,7 +244,7 @@ def create_task(body: TaskCreateRequest, user: dict = Depends(require_roles("emp
     if not hr_user:
         cur.close(); conn.close()
         raise HTTPException(status_code=400, detail="HR not found with this email")
-    if hr_user["role"] != "employer":
+    if hr_user["role"] != "hr":
         cur.close(); conn.close()
         raise HTTPException(status_code=400, detail="Selected user is not an HR")
 
