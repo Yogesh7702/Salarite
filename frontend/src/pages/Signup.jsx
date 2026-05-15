@@ -1,3 +1,4 @@
+// pages/Signup.jsx
 import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
@@ -12,40 +13,35 @@ export default function Signup() {
     password: "",
     role: "employer",
   });
-
   const [err, setErr] = useState("");
   const [loading, setLoading] = useState(false);
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setForm((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
+    setForm((prev) => ({ ...prev, [name]: value }));
   };
 
   const submit = async (e) => {
     e.preventDefault();
     setErr("");
     setLoading(true);
-
     try {
-      const u = await signup(
-        form.name,
-        form.email,
-        form.password,
-        form.role
-      );
+      const u = await signup(form.name, form.email, form.password, form.role);
 
       if (u.role === "employer") {
-        nav("/employer");
+        nav("/employer", { replace: true });
       } else if (u.role === "hr") {
-        nav("/hr");
+        nav("/hr", { replace: true });
       } else {
-        nav("/candidate");
+        // candidate
+        nav("/interviews", { replace: true });
       }
     } catch (e) {
-      setErr(e.response?.data?.error || "Signup failed");
+      setErr(
+        e?.response?.data?.detail ||
+        e?.response?.data?.error ||
+        "Signup failed. Email may already be in use."
+      );
     } finally {
       setLoading(false);
     }
@@ -58,25 +54,12 @@ export default function Signup() {
 
         <div style={{ marginBottom: "0.75rem" }}>
           <label className="muted" htmlFor="name">Name</label>
-          <input
-            id="name"
-            name="name"
-            required
-            value={form.name}
-            onChange={handleChange}
-          />
+          <input id="name" name="name" required value={form.name} onChange={handleChange} />
         </div>
 
         <div style={{ marginBottom: "0.75rem" }}>
           <label className="muted" htmlFor="email">Email</label>
-          <input
-            id="email"
-            name="email"
-            type="email"
-            required
-            value={form.email}
-            onChange={handleChange}
-          />
+          <input id="email" name="email" type="email" required value={form.email} onChange={handleChange} />
         </div>
 
         <div style={{ marginBottom: "0.75rem" }}>
@@ -94,19 +77,14 @@ export default function Signup() {
 
         <div style={{ marginBottom: "0.75rem" }}>
           <label className="muted" htmlFor="role">Role</label>
-          <select
-            id="role"
-            name="role"
-            value={form.role}
-            onChange={handleChange}
-          >
+          <select id="role" name="role" value={form.role} onChange={handleChange}>
             <option value="employer">Employer</option>
             <option value="hr">Virtual HR</option>
             <option value="candidate">Candidate</option>
           </select>
         </div>
 
-        {err && <div className="error">{err}</div>}
+        {err && <div className="error" style={{ marginBottom: "0.5rem" }}>{err}</div>}
 
         <button
           type="submit"
