@@ -5,22 +5,18 @@ import { useAuth } from "../context/AuthContext";
 
 export default function HRDashboard() {
   const { user } = useAuth();
-
   const [tasks, setTasks] = useState([]);
-  const [filter, setFilter] = useState("pending");
+  const [filter, setFilter] = useState("all");
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const [err, setErr] = useState("");
 
   const load = useCallback(async () => {
     try {
-      setLoading(true);
-      setError("");
-
+      setErr("");
       const { data } = await api.get("/api/tasks");
       setTasks(Array.isArray(data) ? data : []);
-    } catch (err) {
-      console.error("HR dashboard load failed:", err);
-      setError(err?.response?.data?.error || "Failed to load HR dashboard");
+    } catch (e) {
+      setErr(e.response?.data?.detail || e.response?.data?.error || "Failed to load tasks");
     } finally {
       setLoading(false);
     }
@@ -28,35 +24,23 @@ export default function HRDashboard() {
 
   useEffect(() => {
     load();
+    if (!socket.connected) socket.connect();
     socket.on("tasks_changed", load);
-
-    return () => {
-      socket.off("tasks_changed", load);
-    };
+    return () => socket.off("tasks_changed", load);
   }, [load]);
 
   const update = async (id, status) => {
     try {
       await api.patch(`/api/tasks/${id}`, { status });
       load();
-    } catch (err) {
-      console.error("Task update failed:", err);
-      alert(err?.response?.data?.error || "Failed to update task");
+    } catch (e) {
+      alert(e.response?.data?.detail || e.response?.data?.error || "Failed to update task");
     }
   };
 
   const hrTasks = useMemo(() => {
     if (!user) return [];
-
-    return tasks.filter((t) => {
-      const assignedIdMatch = Number(t.assigned_to) === Number(user.id);
-      const assignedEmailMatch =
-        t.assignee_email &&
-        user.email &&
-        String(t.assignee_email).toLowerCase() === String(user.email).toLowerCase();
-
-      return assignedIdMatch || assignedEmailMatch;
-    });
+    return tasks.filter((t) => Number(t.assigned_to) === Number(user.id));
   }, [tasks, user]);
 
   const filtered = useMemo(() => {
@@ -71,22 +55,15 @@ export default function HRDashboard() {
     completed: hrTasks.filter((t) => t.status === "completed").length,
   };
 
-  if (loading) {
-    return (
-      <div className="container">
-        <h2>Virtual HR Workspace</h2>
-        <div className="muted">Loading tasks...</div>
-      </div>
-    );
-  }
+  if (loading) return <div className="container"><h2>HR Workspace</h2><div className="muted">Loading...</div></div>;
 
   return (
     <div className="container">
       <h2>Virtual HR Workspace</h2>
 
-      {error && <div className="error">{error}</div>}
+      {err && <div className="error">{err}</div>}
 
-      <div className="grid grid-3">
+      <div className="grid grid-4">
         <div className="card"><div className="muted">Total</div><h3>{stats.total}</h3></div>
         <div className="card"><div className="muted">Pending</div><h3>{stats.pending}</h3></div>
         <div className="card"><div className="muted">In Progress</div><h3>{stats.in_progress}</h3></div>
@@ -95,28 +72,20 @@ export default function HRDashboard() {
 
       <div className="card">
         <div className="row" style={{ gap: "0.5rem", flexWrap: "wrap" }}>
-          {["pending", "in_progress", "completed", "all"].map((f) => (
-            <button
-              key={f}
-              className={filter === f ? "" : "secondary"}
-              onClick={() => setFilter(f)}
-            >
+          {["all", "pending", "in_progress", "completed"].map((f) => (
+            <button key={f} className={filter === f ? "" : "secondary"} onClick={() => setFilter(f)}>
               {f.replace("_", " ")}
             </button>
           ))}
         </div>
       </div>
 
-      {!error && hrTasks.length === 0 && (
-        <div className="card">
-          <div className="muted">No tasks assigned to you yet.</div>
-        </div>
+      {hrTasks.length === 0 && !err && (
+        <div className="card"><div className="muted">No tasks assigned to you yet.</div></div>
       )}
 
-      {!error && hrTasks.length > 0 && filtered.length === 0 && (
-        <div className="card">
-          <div className="muted">No tasks found for this filter.</div>
-        </div>
+      {hrTasks.length > 0 && filtered.length === 0 && (
+        <div className="card"><div className="muted">No {filter.replace("_", " ")} tasks.</div></div>
       )}
 
       <div className="grid grid-2">
